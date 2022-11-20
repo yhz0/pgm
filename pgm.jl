@@ -1,21 +1,44 @@
 using LinearAlgebra, Distributions, StaticArrays
 
 #parameters for the liquidation problem (AAPL)
-beta = 1.03*10^-5
-gamma = 7.27*10^-6
-sigw = sqrt(0.022)
-delta = beta - gamma/2
-epsilon = 10^-8
-phi = 5*10^-6
+const beta = 1.03*10^-5
+const gamma = 7.27*10^-6
+const sigw = sqrt(0.022)
+const delta = beta - gamma/2
+const epsilon = 10^-8
+const phi = 5*10^-6
 
 #inital state
-E_x00 = 193
-E_x01 = 500
-var_x00 = 57
-var_x01 = 1
-E_x00_2 = var_x00 + E_x00^2
-E_x01_2 = var_x01 + E_x01^2
+const E_x00 = 193
+const E_x01 = 500
+const var_x00 = 57
+const var_x01 = 1
+const E_x00_2 = var_x00 + E_x00^2
+const E_x01_2 = var_x01 + E_x01^2
 
+function solve_exact()
+    A = I(2)
+    B = [-gamma, -1]
+    Qt = Diagonal([epsilon, phi*sigw^2])
+    QT = Diagonal([epsilon, delta + phi*sigw^2])
+    Rt = delta
+
+    # Find P
+    P = Array{Float64}(undef, 11, 2, 2)
+    P[11, :, :] .= QT
+    for t = 10:-1:1
+        Pt_plus = P[t+1, :, :]
+        fact = inv(B'*Pt_plus*B + Rt)
+        P[t, :, :] .= Qt + A' * Pt_plus * A - A' *Pt_plus*B*fact*B'*Pt_plus*A
+    end
+
+    K_star = Array{Float64}(undef, 2, 10)
+    for t = 1:10
+        K_star[:, t] = inv(B' * P[t+1, :, :] * B + Rt) * B' * P[t+1, :, :]* A
+    end
+
+    return K_star
+end
 
 function simulate(K)::Float64
     @assert(size(K) == (2, 10))
@@ -84,7 +107,7 @@ function mygrad_twoside(K_in::Matrix{Float64}, t::Int; r::Float64 = 0.6)::Vector
     return v
 end
 
-function gradient_descent(K, oracle; eta = 0.05)
+function gd_step(K, oracle; eta = 0.05)
     @assert(size(K) == (2, 10))
     nablaCK = zeros(2, 10)
     m = 200
@@ -96,19 +119,47 @@ function gradient_descent(K, oracle; eta = 0.05)
 end
 
 function approx_eval(K; N = 10000)
-    
+    sum_x = 0.0
+    sum_x2 = 0.0
+
+    for i = 1:N
+        v = simulate(K)
+        sum_x += v
+        sum_x2 += v^2
+    end
+
+    stddev_hat = sqrt(sum_x2 / (N-1))
+    mean_hat = sum_x / N
+
+    return mean_hat, 1.96 * stddev_hat / sqrt(N)
 end
 
-function gd()
+function gd(grad_oracle;
+    max_iter = 100,
+    true_cost::Union{Nothing, Float64} = nothing,
+    gd_param = Dict{Symbol, Any}()
+    )
+    rel_error = Float64[]
     K = Matrix{Float64}(undef, 2, 10)
-   
     K .= -0.2*ones(2, 10)
-    for iter = 1:100
-        # K, gnorm= gradient_descent(K, mygrad)
-        K, gnorm= gradient_descent(K, mygrad)
+    for iter = 1:max_iter
+        K, gnorm= gd_step(K, grad_oracle; gd_param ...)
         
+        # Evaluate if needed
+        if true_cost !== nothing
+            v = approx_eval(K)[1]
+            push!(rel_error, (v - true_cost) / true_cost)
+        end
         @info "iter = $iter, g = $gnorm"
     end
+    return K, rel_error
 end
 
-@time std(i for i in 1:100000)
+# ??? How to exactly evaluate?
+function exact_eval(K)
+    x00 = Normal(E_x00, sqrt(var_x00))
+    x01 = Normal(E_x01, sqrt(var_x01))
+    noise_dist = Normal(0, sigw)
+    x_dist = product_distribution([x00, x01])
+    
+end
