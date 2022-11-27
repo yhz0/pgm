@@ -37,7 +37,7 @@ function solve_exact()
         K_star[:, t] = inv(B' * P[t+1, :, :] * B + Rt) * B' * P[t+1, :, :]* A
     end
 
-    return K_star
+    return P, K_star
 end
 
 function simulate(K)::Float64
@@ -107,7 +107,7 @@ function mygrad_twoside(K_in::Matrix{Float64}, t::Int; r::Float64 = 0.6)::Vector
     return v
 end
 
-function gd_step(K, oracle; eta = 0.05)
+function estimate_gradient(K, oracle)
     @assert(size(K) == (2, 10))
     nablaCK = zeros(2, 10)
     m = 200
@@ -115,7 +115,7 @@ function gd_step(K, oracle; eta = 0.05)
         nablaCK[:, t] = sum([oracle(K, t) for i = 1:m]) / Float64(m)
     end
 
-    return K - eta * nablaCK, norm(nablaCK)
+    return nablaCK, norm(nablaCK)
 end
 
 function approx_eval(K; N = 10000)
@@ -135,15 +135,16 @@ function approx_eval(K; N = 10000)
 end
 
 function gd(grad_oracle;
-    max_iter = 100,
+    max_iter::Int = 100,
     true_cost::Union{Nothing, Float64} = nothing,
-    gd_param = Dict{Symbol, Any}()
+    eta = 0.05
     )
     rel_error = Float64[]
     K = Matrix{Float64}(undef, 2, 10)
     K .= -0.2*ones(2, 10)
     for iter = 1:max_iter
-        K, gnorm= gd_step(K, grad_oracle; gd_param ...)
+        dK, gnorm= estimate_gradient(K, grad_oracle)
+        K -= (eta * dK)
         
         # Evaluate if needed
         if true_cost !== nothing
@@ -156,10 +157,40 @@ function gd(grad_oracle;
 end
 
 # ??? How to exactly evaluate?
-function exact_eval(K)
-    x00 = Normal(E_x00, sqrt(var_x00))
-    x01 = Normal(E_x01, sqrt(var_x01))
-    noise_dist = Normal(0, sigw)
-    x_dist = product_distribution([x00, x01])
+# function exact_eval(K)
+#     x00 = Normal(E_x00, sqrt(var_x00))
+#     x01 = Normal(E_x01, sqrt(var_x01))
+#     noise_dist = Normal(0, sigw)
+#     x_dist = product_distribution([x00, x01])
     
+# end
+
+# block_grad_oracle is mygrad or mygrad_twoside
+function bcd(block_grad_oracle;
+    max_iter::Int = 100,
+    true_cost::Union{Nothing, Float64} = nothing,
+    eta = 0.05
+    )
+    rel_error = Float64[]
+    K = Matrix{Float64}(undef, 2, 10)
+    K .= -0.2*ones(2, 10)
+
+
+    for iter = 1:max_iter
+        for t = 10:-1:1
+            nablaKt = zeros(2)
+            for rep = 1:200
+                nablaKt .= nablaKt + block_grad_oracle(K, t) / 200
+            end
+            K[:, t] .= K[:, t] - eta * nablaKt
+            if true_cost !== nothing
+                v = approx_eval(K)[1]
+                push!(rel_error, (v - true_cost) / true_cost)
+            end
+        end
+        @info "iter=$iter"
+    end
+
+    return K, rel_error
 end
+
